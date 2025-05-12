@@ -80,7 +80,8 @@ def send_telegram_message(title, url):
         f"<b>📼 {game_info}</b>\n"
         f"<code>────────────────────────────</code>\n"
         f"🎥 <a href=\"{url}\">▶ Watch Condensed Game</a>\n\n"
-        f"<i>{random.choice(COPY_LINES)}</i>"
+        f"<i>{random.choice(COPY_LINES)}</i>\n\n"
+        f"<code>Delivered by your dependable GitHub Actions Bot 🤖</code>"
     )
     res = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
