@@ -30,7 +30,10 @@ jobs:
         run: |
           git config --global user.email "bot@breakfast.com"
           git config --global user.name "Breakfast Bot"
-          git pull --rebase
+          
+          git fetch origin main
+          git reset --hard origin/main
+
           git add posted_games.txt
           git commit -m "🤖 [bot] Update posted games log" || echo "No changes to commit"
-          git push origin main
+          git push origin main || echo "Push failed, but continuing"
