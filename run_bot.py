@@ -1,25 +1,50 @@
-import requests
 import os
+import requests
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-FORCE_POST = os.getenv("FORCE_POST", "").lower() == "true"
-POSTED_LOG = "posted_games.txt"
+FORCE_POST = os.getenv("FORCE_POST", "false").lower() == "true"
+POSTED_GAMES_FILE = "posted_games.txt"
 
-def get_most_recent_completed_game_pk():
-    url = 'https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=137&startDate=2024-03-01&endDate=2025-11-30&hydrate=game(content(summary))'
+def get_latest_giants_gamepk():
+    today = datetime.utcnow().date()
+    start_date = today - timedelta(days=3)
+    end_date = today
+
+    url = (
+        f"https://statsapi.mlb.com/api/v1/schedule?"
+        f"teamId=137&startDate={start_date}&endDate={end_date}&sportId=1"
+    )
+
     response = requests.get(url)
+    response.raise_for_status()
     data = response.json()
-    dates = data.get("dates", [])
 
-    for day in reversed(dates):
-        for game in reversed(day.get("games", [])):
-            if game.get("status", {}).get("detailedState") == "Final":
-                return game.get("gamePk")
-    return None
+    games = []
+    for date in data.get("dates", []):
+        for game in date.get("games", []):
+            if (
+                game.get("gameType") == "R" and
+                game.get("status", {}).get("detailedState") == "Final"
+            ):
+                games.append({
+                    "gamePk": game["gamePk"],
+                    "date": game["gameDate"]
+                })
+
+    if not games:
+        print("❌ No recent completed regular-season Giants games found.")
+        return None
+
+    # Sort by gameDate descending to get most recent
+    games.sort(key=lambda g: g["date"], reverse=True)
+    latest_gamepk = games[0]["gamePk"]
+    print(f"✅ Using latest gamePk: {latest_gamepk}")
+    return latest_gamepk
 
 def get_condensed_game_url(game_pk):
     url = f"https://www.mlb.com/gameday/{game_pk}/video"
@@ -28,45 +53,56 @@ def get_condensed_game_url(game_pk):
         return None
 
     import re
-    matches = re.findall(r'"(https:[^"]+?condensed-game[^"]+?\.mp4)"', response.text)
-    return matches[0] if matches else None
+    match = re.search(r'(https://.+?condensed-game[^"]+\.mp4)', response.text)
+    if match:
+        return match.group(1)
+    return None
 
-def already_posted(game_pk):
-    if not os.path.exists(POSTED_LOG):
+def has_already_posted(game_pk):
+    if not os.path.exists(POSTED_GAMES_FILE):
         return False
-    with open(POSTED_LOG, "r") as f:
+    with open(POSTED_GAMES_FILE, "r") as f:
         return str(game_pk) in f.read()
 
 def mark_as_posted(game_pk):
-    with open(POSTED_LOG, "a") as f:
+    with open(POSTED_GAMES_FILE, "a") as f:
         f.write(f"{game_pk}\n")
+    print(f"💾 Saved gamePk: {game_pk}")
 
-def send_to_telegram(text):
-    requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-        data={"chat_id": TELEGRAM_CHAT_ID, "text": text}
-    )
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False,
+    }
+    response = requests.post(url, json=payload)
+    if response.status_code == 200:
+        print("✅ Sent to Telegram.")
+    else:
+        print(f"❌ Failed to send message: {response.text}")
 
 def main():
     print("🎬 Condensed Game Bot (GitHub Actions version)")
-    game_pk = get_most_recent_completed_game_pk()
+
+    game_pk = get_latest_giants_gamepk()
     if not game_pk:
-        print("❌ Could not find a recent completed Giants game.")
         return
 
-    if already_posted(game_pk) and not FORCE_POST:
-        print("🛑 Already posted this game. Skipping.")
+    if has_already_posted(game_pk) and not FORCE_POST:
+        print("🟡 Already posted. Skipping.")
         return
 
     video_url = get_condensed_game_url(game_pk)
-    if video_url:
-        send_to_telegram(f"🎥 Giants Condensed Game:\n{video_url}")
-        print("✅ Sent to Telegram.")
-    else:
+    if not video_url:
         print("🚫 No condensed game video found.")
+        if FORCE_POST:
+            mark_as_posted(game_pk)
+        return
 
+    send_telegram_message(f"📽️ <b>Condensed Game:</b>\n{video_url}")
     mark_as_posted(game_pk)
-    print(f"💾 Saved gamePk: {game_pk}")
 
 if __name__ == "__main__":
     main()
