@@ -10,6 +10,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 POSTED_GAMES_FILE = "posted_games.txt"
 
+
 def get_recent_gamepks():
     url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate=2025-05-10&endDate=2025-05-17"
     r = requests.get(url)
@@ -21,15 +22,18 @@ def get_recent_gamepks():
                 gamepks.append(game["gamePk"])
     return gamepks
 
+
 def already_posted(gamepk):
     if not os.path.exists(POSTED_GAMES_FILE):
         return False
     with open(POSTED_GAMES_FILE, "r") as f:
         return str(gamepk) in f.read()
 
+
 def mark_as_posted(gamepk):
     with open(POSTED_GAMES_FILE, "a") as f:
         f.write(f"{gamepk}\n")
+
 
 def find_condensed_game(gamepk):
     url = f"https://statsapi.mlb.com/api/v1/game/{gamepk}/content"
@@ -49,16 +53,25 @@ def find_condensed_game(gamepk):
                 for playback in item.get("playbacks", []):
                     if "mp4" in playback.get("name", "").lower():
                         return playback["url"]
+                # fallback: return non-mp4 URL
+                return f"https://www.mlb.com{item.get('url', '')}"
         return None
     except Exception as e:
         print(f"❌ Exception while calling content API: {e}")
         return None
 
+
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
     r = requests.post(url, data=data)
     return r.ok
+
 
 def main():
     print("🎬 Condensed Game Bot (GitHub Actions version)")
@@ -73,7 +86,7 @@ def main():
 
         url = find_condensed_game(gamepk)
         if url:
-            msg = f"🎥 Condensed Game Available!\n{url}"
+            msg = f"<b>📼 Condensed Game</b>\n<code>────────────────────────────</code>\n🎥 <a href=\"{url}\">▶ Watch Condensed Game</a>"
             success = send_telegram_message(msg)
             if success:
                 mark_as_posted(gamepk)
@@ -82,6 +95,7 @@ def main():
                 print("❌ Failed to post to Telegram")
         else:
             print(f"❌ No condensed game found for {gamepk}")
+
 
 if __name__ == "__main__":
     main()
