@@ -2,6 +2,52 @@ name: Condensed Game Bot
 
 on:
   schedule:
+    - cron: '0 5 * * *'    # 06:00 UK
+    - cron: '15 5 * * *'   # 06:15 UK
+    - cron: '30 5 * * *'   # 06:30 UK
+    - cron: '45 5 * * *'   # 06:45 UK
+    - cron: '0 6 * * *'    # 07:00 UK
+    - cron: '15 6 * * *'   # 07:15 UK
+    - cron: '30 6 * * *'   # 07:30 UK
+    - cron: '45 6 * * *'   # 07:45 UK
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run the bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python run_bot.py
+
+      - name: Commit posted games log
+        run: |
+          git config --global user.email "bot@breakfast.com"
+          git config --global user.name "Breakfast Bot"
+
+          git fetch origin main
+          git reset --hard origin/main
+
+          git add posted_games.txt
+          git commit -m "🤖 [bot] Update posted games log" || echo "No changes to commit"
+          git push origin main || echo "Push failed, but continuing"
+name: Condensed Game Bot
+
+on:
+  schedule:
     - cron: '0-59/15 5 * * *'  # Every 15 mins from 6–8am UK (UTC+1 = 5–7 UTC)
   workflow_dispatch:
 
