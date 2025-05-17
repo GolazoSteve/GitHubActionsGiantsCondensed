@@ -21,12 +21,17 @@ def get_recent_gamepks(team_id=137):
     url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate=2025-05-10&endDate=2025-05-17"
     r = requests.get(url)
     data = r.json()
-    gamepks = []
+    games = []
     for date in data["dates"]:
         for game in date["games"]:
-            if game["status"]["detailedState"] == "Final" and game["teams"]["home"]["team"]["id"] == team_id or game["teams"]["away"]["team"]["id"] == team_id:
-                gamepks.append(game["gamePk"])
-    return sorted(gamepks)
+            if game["status"]["detailedState"] == "Final":
+                if game["teams"]["home"]["team"]["id"] == team_id or game["teams"]["away"]["team"]["id"] == team_id:
+                    game_pk = game["gamePk"]
+                    game_date = game["gameDate"]
+                    games.append((game_date, game_pk))
+    games.sort()  # Sorts by date ascending
+    return [pk for date, pk in games]
+
 
 def already_posted(gamepk):
     if not os.path.exists(POSTED_GAMES_FILE):
