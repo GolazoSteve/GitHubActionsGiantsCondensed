@@ -1,5 +1,6 @@
-import os
 import requests
+import json
+import os
 import re
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -8,94 +9,104 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-FORCE_POST = os.getenv("FORCE_POST", "").lower() == "true"
-POSTED_LOG = "posted_games.txt"
+FORCE_POST = os.getenv("FORCE_POST", "false").lower() == "true"
 
+POSTED_GAMES_FILE = "posted_games.txt"
 
 def get_recent_giants_games():
-    url = "https://statsapi.mlb.com/api/v1/schedule"
-    params = {
-        "sportId": 1,
-        "teamId": 137,  # SF Giants
-        "startDate": (datetime.today() - timedelta(days=3)).strftime("%Y-%m-%d"),
-        "endDate": datetime.today().strftime("%Y-%m-%d"),
-    }
-    resp = requests.get(url, params=params)
-    data = resp.json()
-    game_pks = []
-    for date in data.get("dates", []):
-        for game in date.get("games", []):
-            if game["status"]["detailedState"] == "Final":
-                game_pks.append(game["gamePk"])
-    return game_pks
+    today = datetime.utcnow()
+    start_date = (today - timedelta(days=3)).strftime("%Y-%m-%d")
+    end_date = today.strftime("%Y-%m-%d")
 
+    url = (
+        f"https://statsapi.mlb.com/api/v1/schedule?"
+        f"teamId=137&startDate={start_date}&endDate={end_date}&sportId=1"
+    )
+    r = requests.get(url)
+    data = r.json()
 
-def load_posted_gamepks():
-    if not os.path.exists(POSTED_LOG):
-        return set()
-    with open(POSTED_LOG, "r") as f:
-        return set(line.strip() for line in f)
+    completed_gamepks = []
+    for date in data["dates"]:
+        for game in date["games"]:
+            if game["status"]["abstractGameState"] == "Final":
+                completed_gamepks.append(game["gamePk"])
 
+    return completed_gamepks
 
-def save_posted_gamepk(game_pk):
-    with open(POSTED_LOG, "a") as f:
+def has_been_posted(game_pk):
+    if not os.path.exists(POSTED_GAMES_FILE):
+        return False
+    with open(POSTED_GAMES_FILE, "r") as f:
+        posted = f.read().splitlines()
+    return str(game_pk) in posted
+
+def mark_as_posted(game_pk):
+    with open(POSTED_GAMES_FILE, "a") as f:
         f.write(f"{game_pk}\n")
 
+def find_condensed_game_url(game_pk):
+    # Try MLB Stats API first
+    url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/content"
+    r = requests.get(url)
+    data = r.json()
 
-def find_mp4_url(game_pk):
-    url = f"https://www.mlb.com/gameday/{game_pk}/video"
-    resp = requests.get(url)
-    html = resp.text
+    try:
+        for item in data["media"]["epg"]:
+            if item["title"] == "Extended Highlights":
+                for media in item["items"]:
+                    if "condensed" in media["title"].lower():
+                        return media["playbacks"][0]["url"]
+    except (KeyError, IndexError):
+        pass
 
-    # First, try your existing method: __INITIAL_STATE__ blob
-    match = re.search(r"__INITIAL_STATE__\s*=\s*(\{.*?\});", html)
-    if match:
-        json_blob = match.group(1)
-        mp4_matches = re.findall(r"https.*?\.mp4", json_blob)
-        if mp4_matches:
-            return mp4_matches[0]
-
-    # Fallback: scan whole HTML for MP4
-    return fallback_find_mp4_in_html(html)
-
+    # Fallback to scraping
+    fallback_url = f"https://www.mlb.com/gameday/{game_pk}/video"
+    r = requests.get(fallback_url)
+    video_url = fallback_find_mp4_in_html(r.text)
+    return video_url
 
 def fallback_find_mp4_in_html(html):
+    # First: classic .mp4 links
     mp4_links = re.findall(r'https?://[^\s"\']+?\.mp4', html)
     for link in mp4_links:
-        # crude filter to avoid ads or irrelevant clips
         if "condensed" in link.lower():
             return link
-    return None
 
+    # Second: source tags or lazy-loaded video URLs
+    tag_matches = re.findall(r'(?:src|data-video-url)="(https?://[^\s"]+?\.mp4)"', html)
+    for link in tag_matches:
+        if "condensed" in link.lower():
+            return link
+
+    return None
 
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-    requests.post(url, data=data)
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "disable_web_page_preview": False,
+    }
+    requests.post(url, data=payload)
 
-
-def main():
+def run():
     print("🎬 Condensed Game Bot (GitHub Actions version)")
-    posted = load_posted_gamepks()
-    game_pks = get_recent_giants_games()
 
+    game_pks = get_recent_giants_games()
     for game_pk in sorted(game_pks):
-        if not FORCE_POST and str(game_pk) in posted:
+        print(f"🔍 Checking gamePk: {game_pk}")
+        if has_been_posted(game_pk) and not FORCE_POST:
             continue
 
-        print(f"🔍 Checking gamePk: {game_pk}")
-        mp4_url = find_mp4_url(game_pk)
-
-        if mp4_url:
-            message = f"📺 Giants condensed game: {mp4_url}"
-            print("✅ Found condensed game!")
-            send_telegram_message(message)
-            save_posted_gamepk(game_pk)
-            break  # stop after one successful post
+        video_url = find_condensed_game_url(game_pk)
+        if video_url:
+            send_telegram_message(f"Giants Condensed Game: {video_url}")
+            mark_as_posted(game_pk)
+            print(f"✅ Posted condensed game: {video_url}")
+            break
         else:
             print("🚫 No condensed game video found.")
-            save_posted_gamepk(game_pk)
-
+            mark_as_posted(game_pk)
 
 if __name__ == "__main__":
-    main()
+    run()
