@@ -1,92 +1,87 @@
-import os
-import re
 import requests
+import re
+import os
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-FORCE_POST = os.getenv("FORCE_POST") == "true"
-POSTED_LOG = "posted_games.txt"
-
-
-def load_posted_games():
-    if not os.path.exists(POSTED_LOG):
-        return set()
-    with open(POSTED_LOG, "r") as f:
-        return set(line.strip() for line in f.readlines())
-
-
-def save_posted_game(game_pk):
-    with open(POSTED_LOG, "a") as f:
-        f.write(f"{game_pk}\n")
-
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+POSTED_GAMES_FILE = "posted_games.txt"
 
 def get_recent_gamepks():
-    url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=2025-05-16"
-    data = requests.get(url).json()
+    url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate=2025-05-10&endDate=2025-05-17"
+    r = requests.get(url)
+    data = r.json()
     gamepks = []
-    for date in data.get("dates", []):
-        for game in date.get("games", []):
-            if game.get("status", {}).get("detailedState") == "Final":
-                gamepks.append(str(game["gamePk"]))
+    for date in data["dates"]:
+        for game in date["games"]:
+            if game["status"]["detailedState"] == "Final":
+                gamepks.append(game["gamePk"])
     return gamepks
 
+def already_posted(gamepk):
+    if not os.path.exists(POSTED_GAMES_FILE):
+        return False
+    with open(POSTED_GAMES_FILE, "r") as f:
+        return str(gamepk) in f.read()
 
-def get_condensed_game_url(game_pk):
-    # Scrape fallback page: /gameday/{gamePk}/video
-    url = f"https://www.mlb.com/gameday/{game_pk}/video"
-    print(f"🔍 Scraping {url}")
-    res = requests.get(url)
-    soup = BeautifulSoup(res.text, "html.parser")
-    pattern = re.compile(r'https://mlb-cuts-diamond\.mlb\.com/.*\.mp4')
+def mark_as_posted(gamepk):
+    with open(POSTED_GAMES_FILE, "a") as f:
+        f.write(f"{gamepk}\n")
 
-    for tag in soup.find_all("a", href=True):
-        if "condensed" in tag.text.lower():
-            match = pattern.search(str(tag))
-            if match:
-                return match.group(0)
-
-    # Fallback: look in raw HTML
-    match = pattern.search(res.text)
-    if match:
-        return match.group(0)
-
+def extract_condensed_game_url(html):
+    soup = BeautifulSoup(html, "html.parser")
+    scripts = soup.find_all("script")
+    for script in scripts:
+        if script.string:
+            matches = re.findall(r"https://mlb-cuts-diamond\.mlb\.com/[^\"']+condensed[^\"']+\.mp4", script.string)
+            if matches:
+                return matches[0]
     return None
 
+def find_condensed_game(gamepk):
+    url = f"https://www.mlb.com/gameday/{gamepk}/video"
+    print(f"🔍 Scraping {url}")
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            print(f"⚠️ HTTP {r.status_code} for {url}")
+            return None
+        return extract_condensed_game_url(r.text)
+    except Exception as e:
+        print(f"❌ Exception while scraping {url}: {e}")
+        return None
 
-def send_to_telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": message}
+def send_telegram_message(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
     r = requests.post(url, data=data)
-    return r.status_code == 200
-
+    return r.ok
 
 def main():
-    posted = load_posted_games()
+    print("🎬 Condensed Game Bot (GitHub Actions version)")
     gamepks = get_recent_gamepks()
     print(f"🧾 Found {len(gamepks)} recent completed games")
 
-    for game_pk in gamepks:
-        if game_pk in posted and not FORCE_POST:
+    for gamepk in gamepks:
+        print(f"🎬 Checking gamePk: {gamepk}")
+        if already_posted(gamepk):
+            print("⏩ Already posted")
             continue
 
-        print(f"🎬 Checking gamePk: {game_pk}")
-        url = get_condensed_game_url(game_pk)
-
+        url = find_condensed_game(gamepk)
         if url:
-            message = f"📽️ Condensed Game:\n{url}"
-            print(f"✅ Posting: {message}")
-            success = send_to_telegram(message)
+            msg = f"🎥 Condensed Game Available!\n{url}"
+            success = send_telegram_message(msg)
             if success:
-                save_posted_game(game_pk)
+                mark_as_posted(gamepk)
+                print("✅ Posted to Telegram")
             else:
-                print("⚠️ Failed to post to Telegram.")
+                print("❌ Failed to post to Telegram")
         else:
-            print(f"❌ No condensed game found for {game_pk}")
-
+            print(f"❌ No condensed game found for {gamepk}")
 
 if __name__ == "__main__":
     main()
