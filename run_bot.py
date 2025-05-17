@@ -19,8 +19,11 @@ def get_recent_gamepks():
     for date in data["dates"]:
         for game in date["games"]:
             if game["status"]["detailedState"] == "Final":
-                gamepks.append(game["gamePk"])
+                teams = game["teams"]
+                if teams["home"]["team"]["id"] == 137 or teams["away"]["team"]["id"] == 137:
+                    gamepks.append(game["gamePk"])
     return gamepks
+
 
 
 def already_posted(gamepk):
