@@ -1,69 +1,92 @@
 import os
-import time
+import re
 import requests
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup
 
-# Load environment variables
 load_dotenv()
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-POSTED_GAMES_FILE = "posted_games.txt"
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+FORCE_POST = os.getenv("FORCE_POST") == "true"
+POSTED_LOG = "posted_games.txt"
+
 
 def load_posted_games():
-    if not os.path.exists(POSTED_GAMES_FILE):
+    if not os.path.exists(POSTED_LOG):
         return set()
-    with open(POSTED_GAMES_FILE, "r") as f:
-        return set(line.strip() for line in f)
+    with open(POSTED_LOG, "r") as f:
+        return set(line.strip() for line in f.readlines())
 
-def save_posted_game(game_id):
-    with open(POSTED_GAMES_FILE, "a") as f:
-        f.write(f"{game_id}\n")
 
-def get_condensed_game_url(game_id):
-    # Construct the URL for the condensed game video
-    return f"https://www.mlb.com/gameday/{game_id}/condensed"
+def save_posted_game(game_pk):
+    with open(POSTED_LOG, "a") as f:
+        f.write(f"{game_pk}\n")
 
-def check_condensed_game_available(game_id):
-    url = get_condensed_game_url(game_id)
-    response = requests.head(url)
-    return response.status_code == 200
 
-def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-    response = requests.post(url, data=data)
-    return response.ok
+def get_recent_gamepks():
+    url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=2025-05-16"
+    data = requests.get(url).json()
+    gamepks = []
+    for date in data.get("dates", []):
+        for game in date.get("games", []):
+            if game.get("status", {}).get("detailedState") == "Final":
+                gamepks.append(str(game["gamePk"]))
+    return gamepks
+
+
+def get_condensed_game_url(game_pk):
+    # Scrape fallback page: /gameday/{gamePk}/video
+    url = f"https://www.mlb.com/gameday/{game_pk}/video"
+    print(f"🔍 Scraping {url}")
+    res = requests.get(url)
+    soup = BeautifulSoup(res.text, "html.parser")
+    pattern = re.compile(r'https://mlb-cuts-diamond\.mlb\.com/.*\.mp4')
+
+    for tag in soup.find_all("a", href=True):
+        if "condensed" in tag.text.lower():
+            match = pattern.search(str(tag))
+            if match:
+                return match.group(0)
+
+    # Fallback: look in raw HTML
+    match = pattern.search(res.text)
+    if match:
+        return match.group(0)
+
+    return None
+
+
+def send_to_telegram(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {"chat_id": CHAT_ID, "text": message}
+    r = requests.post(url, data=data)
+    return r.status_code == 200
+
 
 def main():
-    posted_games = load_posted_games()
-    # Example list of game IDs to check
-    game_ids = ["777891", "777916"]  # Replace with actual game IDs
+    posted = load_posted_games()
+    gamepks = get_recent_gamepks()
+    print(f"🧾 Found {len(gamepks)} recent completed games")
 
-    for game_id in game_ids:
-        if game_id in posted_games:
+    for game_pk in gamepks:
+        if game_pk in posted and not FORCE_POST:
             continue
 
-        print(f"Checking game ID: {game_id}")
-        if check_condensed_game_available(game_id):
-            message = f"Condensed game available: {get_condensed_game_url(game_id)}"
-            if send_telegram_message(message):
-                print(f"Posted condensed game for game ID: {game_id}")
-                save_posted_game(game_id)
+        print(f"🎬 Checking gamePk: {game_pk}")
+        url = get_condensed_game_url(game_pk)
+
+        if url:
+            message = f"📽️ Condensed Game:\n{url}"
+            print(f"✅ Posting: {message}")
+            success = send_to_telegram(message)
+            if success:
+                save_posted_game(game_pk)
             else:
-                print(f"Failed to send message for game ID: {game_id}")
+                print("⚠️ Failed to post to Telegram.")
         else:
-            print(f"Condensed game not available for game ID: {game_id}. Retrying in 30 minutes.")
-            time.sleep(1800)  # Wait for 30 minutes before retrying
-            if check_condensed_game_available(game_id):
-                message = f"Condensed game available: {get_condensed_game_url(game_id)}"
-                if send_telegram_message(message):
-                    print(f"Posted condensed game for game ID: {game_id}")
-                    save_posted_game(game_id)
-                else:
-                    print(f"Failed to send message for game ID: {game_id}")
-            else:
-                print(f"Condensed game still not available for game ID: {game_id}")
+            print(f"❌ No condensed game found for {game_pk}")
+
 
 if __name__ == "__main__":
     main()
