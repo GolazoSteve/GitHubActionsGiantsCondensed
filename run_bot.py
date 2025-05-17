@@ -2,6 +2,7 @@ import os
 import requests
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import re
 
 load_dotenv()
 
@@ -10,7 +11,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 FORCE_POST = os.getenv("FORCE_POST", "false").lower() == "true"
 POSTED_GAMES_FILE = "posted_games.txt"
 
-def get_latest_giants_gamepk():
+def fetch_recent_completed_giants_games():
     today = datetime.utcnow().date()
     start_date = today - timedelta(days=3)
     end_date = today
@@ -36,27 +37,14 @@ def get_latest_giants_gamepk():
                     "date": game["gameDate"]
                 })
 
-    if not games:
-        print("❌ No recent completed regular-season Giants games found.")
-        return None
-
-    # Sort by gameDate descending to get most recent
-    games.sort(key=lambda g: g["date"], reverse=True)
-    latest_gamepk = games[0]["gamePk"]
-    print(f"✅ Using latest gamePk: {latest_gamepk}")
-    return latest_gamepk
+    # Sort by date descending
+    return sorted(games, key=lambda g: g["date"], reverse=True)
 
 def get_condensed_game_url(game_pk):
     url = f"https://www.mlb.com/gameday/{game_pk}/video"
     response = requests.get(url)
-    if "condensed-game" not in response.text:
-        return None
-
-    import re
     match = re.search(r'(https://.+?condensed-game[^"]+\.mp4)', response.text)
-    if match:
-        return match.group(1)
-    return None
+    return match.group(1) if match else None
 
 def has_already_posted(game_pk):
     if not os.path.exists(POSTED_GAMES_FILE):
@@ -86,23 +74,20 @@ def send_telegram_message(message):
 def main():
     print("🎬 Condensed Game Bot (GitHub Actions version)")
 
-    game_pk = get_latest_giants_gamepk()
-    if not game_pk:
-        return
+    for game in fetch_recent_completed_giants_games():
+        game_pk = game["gamePk"]
 
-    if has_already_posted(game_pk) and not FORCE_POST:
-        print("🟡 Already posted. Skipping.")
-        return
+        if has_already_posted(game_pk) and not FORCE_POST:
+            continue
 
-    video_url = get_condensed_game_url(game_pk)
-    if not video_url:
-        print("🚫 No condensed game video found.")
-        if FORCE_POST:
+        video_url = get_condensed_game_url(game_pk)
+        if video_url:
+            print(f"✅ Found video for gamePk: {game_pk}")
+            send_telegram_message(f"📽️ <b>Condensed Game:</b>\n{video_url}")
             mark_as_posted(game_pk)
-        return
+            return
 
-    send_telegram_message(f"📽️ <b>Condensed Game:</b>\n{video_url}")
-    mark_as_posted(game_pk)
+    print("🚫 No condensed game video found in recent completed games.")
 
 if __name__ == "__main__":
     main()
