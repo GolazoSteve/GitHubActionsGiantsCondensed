@@ -1,6 +1,7 @@
 import requests
 import re
 import os
+import sys
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 
@@ -26,7 +27,6 @@ def get_most_recent_giants_gamepk():
 
     most_recent = sorted(games, key=lambda x: x[0])[-1]
     return most_recent[1]
-
 
 def already_posted(gamepk):
     if not os.path.exists(POSTED_GAMES_FILE):
@@ -67,33 +67,32 @@ def send_telegram_message(text):
     r = requests.post(url, data=data)
     return r.ok
 
-def main():
+def main(force=False):
     print("🎬 Condensed Game Bot (GitHub Actions version)")
-    gamepks = get_recent_gamepks()
-    print(f"🧾 Found {len(gamepks)} recent completed Giants games")
-
-    if not gamepks:
+    gamepk = get_most_recent_giants_gamepk()
+    if not gamepk:
         print("🛑 No recent Giants games found")
         return
 
-    latest_gamepk = max(gamepks)
-    print(f"🎯 Latest gamePk: {latest_gamepk}")
-
-    if already_posted(latest_gamepk):
-        print("⏩ Already posted for latest game")
+    print(f"🎬 Checking gamePk: {gamepk}")
+    if not force and already_posted(gamepk):
+        print("⏩ Already posted")
         return
 
-    url = find_condensed_game(latest_gamepk)
+    url = find_condensed_game(gamepk)
     if url:
         msg = f"🎥 Condensed Game Available!\n{url}"
         success = send_telegram_message(msg)
-        if success:
-            mark_as_posted(latest_gamepk)
+        if success and not force:
+            mark_as_posted(gamepk)
             print("✅ Posted to Telegram")
+        elif success:
+            print("✅ Forced post to Telegram")
         else:
             print("❌ Failed to post to Telegram")
     else:
-        print("❌ No condensed game found for latest Giants game")
+        print(f"❌ No condensed game found for {gamepk}")
 
 if __name__ == "__main__":
-    main()
+    force = "--force" in sys.argv
+    main(force=force)
