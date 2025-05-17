@@ -1,0 +1,41 @@
+name: 🔁 Manual Condensed Game Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force post even if already logged'
+        required: false
+        default: 'true'
+
+jobs:
+  force-run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the bot with force
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FORCE_POST: ${{ github.event.inputs.force }}
+        run: python run_bot.py
+
+      - name: Commit posted games log
+        run: |
+          git config --global user.email "bot@breakfast.com"
+          git config --global user.name "Breakfast Bot"
+          git fetch origin main
+          git reset --hard origin/main
+          git add posted_games.txt
+          git commit -m "🤖 [bot] Force post log update" || echo "No changes to commit"
+          git push origin main || echo "Push failed, but continuing"
