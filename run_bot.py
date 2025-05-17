@@ -31,27 +31,27 @@ def mark_as_posted(gamepk):
     with open(POSTED_GAMES_FILE, "a") as f:
         f.write(f"{gamepk}\n")
 
-def extract_condensed_game_url(html):
-    soup = BeautifulSoup(html, "html.parser")
-    scripts = soup.find_all("script")
-    for script in scripts:
-        if script.string:
-            matches = re.findall(r"https://mlb-cuts-diamond\.mlb\.com/[^\"']+condensed[^\"']+\.mp4", script.string)
-            if matches:
-                return matches[0]
-    return None
-
 def find_condensed_game(gamepk):
-    url = f"https://www.mlb.com/gameday/{gamepk}/video"
-    print(f"🔍 Scraping {url}")
+    url = f"https://statsapi.mlb.com/api/v1/game/{gamepk}/content"
+    print(f"🔍 Checking MLB content API: {url}")
     try:
-        r = requests.get(url, timeout=10)
-        if r.status_code != 200:
-            print(f"⚠️ HTTP {r.status_code} for {url}")
+        res = requests.get(url, timeout=10)
+        if res.status_code != 200:
+            print(f"⚠️ HTTP {res.status_code} for {url}")
             return None
-        return extract_condensed_game_url(r.text)
+
+        data = res.json()
+        items = data.get("highlights", {}).get("highlights", {}).get("items", [])
+        for item in items:
+            title = item.get("title", "").lower()
+            desc = item.get("description", "").lower()
+            if "condensed" in title or "condensed" in desc:
+                for playback in item.get("playbacks", []):
+                    if "mp4" in playback.get("name", "").lower():
+                        return playback["url"]
+        return None
     except Exception as e:
-        print(f"❌ Exception while scraping {url}: {e}")
+        print(f"❌ Exception while calling content API: {e}")
         return None
 
 def send_telegram_message(text):
