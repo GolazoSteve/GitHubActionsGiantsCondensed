@@ -3,32 +3,36 @@ import re
 import os
 import json
 import random
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
+from zoneinfo import ZoneInfo
 
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 POSTED_GAMES_FILE = "posted_games.txt"
+COPY_LINES = json.load(open("copy_bank.json"))['lines']
 
-with open("copy_bank.json", "r") as f:
-    COPY_LINES = json.load(f)["lines"]
 
 def get_recent_gamepks(team_id=137):
-    url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate=2025-05-10&endDate=2025-05-19"
+    now_uk = datetime.now(ZoneInfo("Europe/London"))
+    start_date = (now_uk - timedelta(days=7)).strftime("%Y-%m-%d")
+    end_date = (now_uk + timedelta(days=1)).strftime("%Y-%m-%d")
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId={team_id}&startDate={start_date}&endDate={end_date}"
     r = requests.get(url)
     data = r.json()
     games = []
     for date in data["dates"]:
         for game in date["games"]:
             if game["status"]["detailedState"] == "Final":
-                if game["teams"]["home"]["team"]["id"] == team_id or game["teams"]["away"]["team"]["id"] == team_id:
-                    game_pk = game["gamePk"]
-                    game_date = game["gameDate"]
-                    games.append((game_date, game_pk))
-    games.sort(reverse=True)  # Sorts by date descending
+                game_pk = game["gamePk"]
+                game_date = game["gameDate"]
+                games.append((game_date, game_pk))
+    games.sort(reverse=True)  # Most recent first
     return [pk for date, pk in games]
+
 
 def already_posted(gamepk):
     if not os.path.exists(POSTED_GAMES_FILE):
@@ -36,9 +40,11 @@ def already_posted(gamepk):
     with open(POSTED_GAMES_FILE, "r") as f:
         return str(gamepk) in f.read()
 
+
 def mark_as_posted(gamepk):
     with open(POSTED_GAMES_FILE, "a") as f:
         f.write(f"{gamepk}\n")
+
 
 def find_condensed_game(gamepk):
     url = f"https://statsapi.mlb.com/api/v1/game/{gamepk}/content"
@@ -57,11 +63,12 @@ def find_condensed_game(gamepk):
             if "condensed" in title or "condensed" in desc:
                 for playback in item.get("playbacks", []):
                     if "mp4" in playback.get("name", "").lower():
-                        return item.get("title"), playback["url"]
+                        return item["title"], playback["url"]
         return None, None
     except Exception as e:
         print(f"❌ Exception while calling content API: {e}")
         return None, None
+
 
 def send_telegram_message(title, url):
     game_info = title.replace("Condensed Game: ", "").strip()
@@ -82,33 +89,30 @@ def send_telegram_message(title, url):
     )
     return res.ok
 
-def main(force=False):
+
+def main():
     print("🎬 Condensed Game Bot (GitHub Actions version)")
     gamepks = get_recent_gamepks()
-    if not gamepks:
-        print("🛑 No recent Giants games found.")
-        return
+    print(f"🧾 Found {len(gamepks)} recent Giants games")
 
-    gamepk = gamepks[0]
-    print(f"🎬 Most recent Giants gamePk: {gamepk}")
+    for gamepk in gamepks:
+        print(f"🎬 Checking gamePk: {gamepk}")
+        if already_posted(gamepk):
+            print("⏩ Already posted")
+            continue
 
-    if not force and already_posted(gamepk):
-        print("⏩ Already posted")
-        return
-
-    title, url = find_condensed_game(gamepk)
-    if url:
-        success = send_telegram_message(title, url)
-        if success:
-            if not force:
+        title, url = find_condensed_game(gamepk)
+        if url:
+            success = send_telegram_message(title, url)
+            if success:
                 mark_as_posted(gamepk)
-            print("✅ Posted to Telegram")
+                print("✅ Posted to Telegram")
+            else:
+                print("❌ Failed to post to Telegram")
+            break  # Only post the most recent game
         else:
-            print("❌ Failed to post to Telegram")
-    else:
-        print(f"❌ No condensed game found for {gamepk}")
+            print(f"❌ No condensed game found for {gamepk}")
+
 
 if __name__ == "__main__":
-    import sys
-    force = "--force" in sys.argv
-    main(force=force)
+    main()
