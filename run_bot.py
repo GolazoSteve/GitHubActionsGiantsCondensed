@@ -1,4 +1,5 @@
 import os
+import sys
 import requests
 import json
 import random
@@ -50,6 +51,7 @@ def get_latest_giants_gamepk():
         return None
 
     return sorted(all_games, key=lambda x: datetime.strptime(x[0], "%Y-%m-%d"))[-1][1]
+
 
 
 def find_condensed_game_video(game_pk):
