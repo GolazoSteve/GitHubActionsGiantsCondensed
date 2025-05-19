@@ -34,23 +34,23 @@ def get_latest_giants_gamepk():
     dates = res.json().get("dates", [])
     all_games = []
 
-    print("📅 Debug: All Final Giants Games")
+    print("📅 Debug: All Giants games in range")
     for date in dates:
         for game in date.get("games", []):
-            status = game.get("status", {}).get("detailedState")
             official_date = game.get("officialDate")
+            status = game.get("status", {}).get("detailedState")
             game_pk = game["gamePk"]
+            print(f"{official_date} | gamePk: {game_pk} | status: {status}")
+            sys.stdout.flush()
             if status == "Final":
-                print(f"{official_date} | gamePk: {game_pk} | status: {status}")
-                sys.stdout.flush()
                 all_games.append((official_date, game_pk))
 
     if not all_games:
-        logging.info("🛑 No recent completed Giants games found.")
+        logging.warning("🛑 No Giants games marked FINAL in schedule response.")
         return None
 
-    # Proper sort by date
     return sorted(all_games, key=lambda x: datetime.strptime(x[0], "%Y-%m-%d"))[-1][1]
+
 
 def find_condensed_game_video(game_pk):
     url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/content"
