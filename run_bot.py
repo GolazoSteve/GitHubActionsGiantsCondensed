@@ -1,116 +1,120 @@
-import requests
-import re
 import os
+import requests
 import json
 import random
+import logging
+import sys
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from bs4 import BeautifulSoup
+from zoneinfo import ZoneInfo
 
+# Load environment variables
 load_dotenv()
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 POSTED_GAMES_FILE = "posted_games.txt"
 
-# Load copy lines for WADE-isms
 with open("copy_bank.json", "r") as f:
-    copy_data = json.load(f)
-    COPY_LINES = copy_data["lines"]
+    COPY_LINES = json.load(f)["lines"]
 
-def get_recent_gamepks(team_id=137):
-    url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate=2025-05-10&endDate=2025-05-17"
-    r = requests.get(url)
-    data = r.json()
-    games = []
-    for date in data["dates"]:
-        for game in date["games"]:
-            if game["status"]["detailedState"] == "Final":
-                if game["teams"]["home"]["team"]["id"] == team_id or game["teams"]["away"]["team"]["id"] == team_id:
-                    game_pk = game["gamePk"]
-                    game_date = game["gameDate"]
-                    games.append((game_date, game_pk))
-    games.sort()  # Sorts by date ascending
-    return [pk for date, pk in games]
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+print("🎬 Condensed Game Bot (GitHub Actions version)")
 
+def get_latest_giants_gamepk():
+    now_uk = datetime.now(ZoneInfo("Europe/London"))
+    start_date = (now_uk - timedelta(days=3)).strftime("%Y-%m-%d")
+    end_date = (now_uk + timedelta(days=1)).strftime("%Y-%m-%d")
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=137&startDate={start_date}&endDate={end_date}"
+    res = requests.get(url)
+    if res.status_code != 200:
+        logging.error("❌ Failed to fetch schedule.")
+        return None
 
-def already_posted(gamepk):
-    if not os.path.exists(POSTED_GAMES_FILE):
-        return False
-    with open(POSTED_GAMES_FILE, "r") as f:
-        return str(gamepk) in f.read()
+    dates = res.json().get("dates", [])
+    all_games = []
 
-def mark_as_posted(gamepk):
-    with open(POSTED_GAMES_FILE, "a") as f:
-        f.write(f"{gamepk}\n")
+    print("📅 Debug: All Final Giants Games")
+    for date in dates:
+        for game in date.get("games", []):
+            status = game.get("status", {}).get("detailedState")
+            official_date = game.get("officialDate")
+            game_pk = game["gamePk"]
+            if status == "Final":
+                print(f"{official_date} | gamePk: {game_pk} | status: {status}")
+                sys.stdout.flush()
+                all_games.append((official_date, game_pk))
 
-def find_condensed_game(gamepk):
-    url = f"https://statsapi.mlb.com/api/v1/game/{gamepk}/content"
-    print(f"🔍 Checking MLB content API: {url}")
+    if not all_games:
+        logging.info("🛑 No recent completed Giants games found.")
+        return None
+
+    # Proper sort by date
+    return sorted(all_games, key=lambda x: datetime.strptime(x[0], "%Y-%m-%d"))[-1][1]
+
+def find_condensed_game_video(game_pk):
+    url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/content"
+    response = requests.get(url)
+    if response.status_code != 200:
+        logging.error(f"Failed to fetch content for gamePk {game_pk}")
+        return None, None
+
+    data = response.json()
+    videos = data.get("highlights", {}).get("highlights", {}).get("items", [])
+    for video in videos:
+        title = video.get("title", "").lower()
+        description = video.get("description", "").lower()
+        if "condensed" in title or "condensed" in description:
+            for playback in video.get("playbacks", []):
+                if "mp4" in playback.get("name", "").lower():
+                    return video["title"], playback.get("url")
+            return video["title"], f"https://www.mlb.com{video.get('url', '')}"
+    return None, None
+
+def get_posted_games():
     try:
-        res = requests.get(url, timeout=10)
-        if res.status_code != 200:
-            print(f"⚠️ HTTP {res.status_code} for {url}")
-            return None, None
+        with open(POSTED_GAMES_FILE, "r") as f:
+            return set(f.read().splitlines())
+    except FileNotFoundError:
+        return set()
 
-        data = res.json()
-        items = data.get("highlights", {}).get("highlights", {}).get("items", [])
-        for item in items:
-            title = item.get("title", "").lower()
-            desc = item.get("description", "").lower()
-            if "condensed" in title or "condensed" in desc:
-                for playback in item.get("playbacks", []):
-                    if "mp4" in playback.get("name", "").lower():
-                        return item.get("title", "Condensed Game"), playback["url"]
-        return None, None
-    except Exception as e:
-        print(f"❌ Exception while calling content API: {e}")
-        return None, None
+def save_posted_game(game_pk):
+    with open(POSTED_GAMES_FILE, "a") as f:
+        f.write(f"{game_pk}\n")
+    logging.info(f"💾 Saved gamePk: {game_pk}")
 
 def send_telegram_message(title, url):
-    random_line = random.choice(COPY_LINES)
+    game_info = title.replace("Condensed Game: ", "").strip()
     message = (
-        f"<b>📼 {title}</b>\n"
+        f"<b>📼 {game_info}</b>\n"
         f"<code>────────────────────────────</code>\n"
         f"🎥 <a href=\"{url}\">▶ Watch Condensed Game</a>\n\n"
-        f"<i>{random_line}</i>"
+        f"<i>{random.choice(COPY_LINES)}</i>\n\n"
+        f"<code>Delivered by your dependable GitHub Actions Bot 🤖</code>"
     )
-    api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
-    res = requests.post(api_url, data=payload)
-    return res.ok
-
-def main(force=False):
-    print("🎬 Condensed Game Bot (GitHub Actions version)")
-    gamepks = get_recent_gamepks()
-    print(f"🧾 Found {len(gamepks)} recent completed Giants games")
-
-    target_gamepk = gamepks[-1] if gamepks else None
-    if not target_gamepk:
-        print("🛑 No recent Giants game found")
-        return
-
-    if not force and already_posted(target_gamepk):
-        print("⏩ Already posted")
-        return
-
-    title, url = find_condensed_game(target_gamepk)
-    if url:
-        success = send_telegram_message(title, url)
-        if success:
-            if not force:
-                mark_as_posted(target_gamepk)
-            print("✅ Posted to Telegram")
-        else:
-            print("❌ Failed to post to Telegram")
+    res = requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        data={
+            "chat_id": CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+    )
+    if res.status_code == 200:
+        logging.info("✅ Sent to Telegram.")
     else:
-        print(f"❌ No condensed game found for {target_gamepk}")
+        logging.error(f"❌ Telegram error: {res.text}")
 
-if __name__ == "__main__":
-    import sys
-    force_flag = "--force" in sys.argv
-    main(force=force_flag)
+def run_bot():
+    game_pk = get_latest_giants_gamepk()
+    if not game_pk:
+        return
+    if str(game_pk) in get_posted_games():
+        logging.info("🛑 Already posted for this gamePk.")
+        return
+    title, url = find_condensed_game_video(game_pk)
+    if url:
+        logging.info(f"🔍 Checking MLB content API: https://statsapi.mlb.com/api/v1/game/{game_pk}/content")
+        send_telegram_message(title, url)
+        save_posted_game(str(game_pk))
