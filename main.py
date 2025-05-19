@@ -32,10 +32,16 @@ def get_latest_giants_gamepk():
 
     dates = res.json().get("dates", [])
     all_games = []
+
+    print("📅 Debug: All Final Giants Games")
     for date in dates:
         for game in date.get("games", []):
-            if game.get("status", {}).get("detailedState") == "Final":
-                all_games.append((game["gameDate"], game["gamePk"]))
+            status = game.get("status", {}).get("detailedState")
+            official_date = game.get("officialDate")
+            game_pk = game["gamePk"]
+            if status == "Final":
+                all_games.append((official_date, game_pk))
+                print(f"{official_date} | gamePk: {game_pk} | status: {status}")
 
     if not all_games:
         logging.info("🛑 No recent completed Giants games found.")
