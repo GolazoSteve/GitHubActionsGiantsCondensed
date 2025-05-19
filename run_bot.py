@@ -16,7 +16,7 @@ with open("copy_bank.json", "r") as f:
     COPY_LINES = json.load(f)["lines"]
 
 def get_recent_gamepks(team_id=137):
-    url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate=2025-05-10&endDate=2025-05-17"
+    url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate=2025-05-10&endDate=2025-05-19"
     r = requests.get(url)
     data = r.json()
     games = []
@@ -27,7 +27,7 @@ def get_recent_gamepks(team_id=137):
                     game_pk = game["gamePk"]
                     game_date = game["gameDate"]
                     games.append((game_date, game_pk))
-    games.sort()  # Sorts by date ascending
+    games.sort(reverse=True)  # Sorts by date descending
     return [pk for date, pk in games]
 
 def already_posted(gamepk):
@@ -57,7 +57,7 @@ def find_condensed_game(gamepk):
             if "condensed" in title or "condensed" in desc:
                 for playback in item.get("playbacks", []):
                     if "mp4" in playback.get("name", "").lower():
-                        return item.get("title", "Condensed Game"), playback["url"]
+                        return item.get("title"), playback["url"]
         return None, None
     except Exception as e:
         print(f"❌ Exception while calling content API: {e}")
@@ -71,39 +71,42 @@ def send_telegram_message(title, url):
         f"🎥 <a href=\"{url}\">▶ Watch Condensed Game</a>\n\n"
         f"<i>{random.choice(COPY_LINES)}</i>"
     )
-    api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
-    r = requests.post(api_url, data=data)
-    return r.ok
+    res = requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+        data={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+    )
+    return res.ok
 
 def main(force=False):
     print("🎬 Condensed Game Bot (GitHub Actions version)")
     gamepks = get_recent_gamepks()
-    print(f"🧾 Found {len(gamepks)} recent Giants games")
+    if not gamepks:
+        print("🛑 No recent Giants games found.")
+        return
 
-    # Always check most recent first
-    for gamepk in reversed(gamepks):
-        print(f"🎬 Checking gamePk: {gamepk}")
-        if not force and already_posted(gamepk):
-            print("⏩ Already posted")
-            continue
+    gamepk = gamepks[0]
+    print(f"🎬 Most recent Giants gamePk: {gamepk}")
 
-        title, url = find_condensed_game(gamepk)
-        if url:
-            success = send_telegram_message(title, url)
-            if success:
+    if not force and already_posted(gamepk):
+        print("⏩ Already posted")
+        return
+
+    title, url = find_condensed_game(gamepk)
+    if url:
+        success = send_telegram_message(title, url)
+        if success:
+            if not force:
                 mark_as_posted(gamepk)
-                print("✅ Posted to Telegram")
-            else:
-                print("❌ Failed to post to Telegram")
-            return  # Stop after first valid post
-
-    print("🛑 No new condensed Giants game found.")
+            print("✅ Posted to Telegram")
+        else:
+            print("❌ Failed to post to Telegram")
+    else:
+        print(f"❌ No condensed game found for {gamepk}")
 
 if __name__ == "__main__":
     import sys
