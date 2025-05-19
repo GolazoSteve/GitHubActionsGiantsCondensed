@@ -3,6 +3,7 @@ import requests
 import json
 import random
 import logging
+import sys
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from zoneinfo import ZoneInfo
@@ -40,14 +41,16 @@ def get_latest_giants_gamepk():
             official_date = game.get("officialDate")
             game_pk = game["gamePk"]
             if status == "Final":
-                all_games.append((official_date, game_pk))
                 print(f"{official_date} | gamePk: {game_pk} | status: {status}")
+                sys.stdout.flush()
+                all_games.append((official_date, game_pk))
 
     if not all_games:
         logging.info("🛑 No recent completed Giants games found.")
         return None
 
-    return sorted(all_games, key=lambda x: x[0])[-1][1]
+    # Proper sort by date
+    return sorted(all_games, key=lambda x: datetime.strptime(x[0], "%Y-%m-%d"))[-1][1]
 
 def find_condensed_game_video(game_pk):
     url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/content"
@@ -112,5 +115,6 @@ def run_bot():
         return
     title, url = find_condensed_game_video(game_pk)
     if url:
+        logging.info(f"🔍 Checking MLB content API: https://statsapi.mlb.com/api/v1/game/{game_pk}/content")
         send_telegram_message(title, url)
         save_posted_game(str(game_pk))
