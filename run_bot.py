@@ -7,6 +7,10 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from zoneinfo import ZoneInfo
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+import io
 
 load_dotenv()
 
@@ -14,6 +18,43 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 POSTED_GAMES_FILE = "posted_games.txt"
 COPY_LINES = json.load(open("copy_bank.json"))['lines']
+DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+
+
+def get_drive_service():
+    creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+    creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/drive"])
+    return build("drive", "v3", credentials=creds)
+
+
+def download_posted_file(drive, filename):
+    query = f"'{DRIVE_FOLDER_ID}' in parents and name='{filename}'"
+    results = drive.files().list(q=query, fields="files(id, name)").execute()
+    items = results.get('files', [])
+    if not items:
+        print(f"🆕 No {filename} found in Drive — starting fresh.")
+        return
+    file_id = items[0]['id']
+    request = drive.files().get_media(fileId=file_id)
+    with open(filename, "wb") as f:
+        downloader = MediaIoBaseDownload(f, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+    print(f"📥 Downloaded {filename} from Drive.")
+
+
+def upload_posted_file(drive, filename):
+    query = f"'{DRIVE_FOLDER_ID}' in parents and name='{filename}'"
+    results = drive.files().list(q=query, fields="files(id)").execute()
+    file_metadata = {"name": filename, "parents": [DRIVE_FOLDER_ID]}
+    media = MediaFileUpload(filename, resumable=True)
+    if results['files']:
+        file_id = results['files'][0]['id']
+        drive.files().update(fileId=file_id, media_body=media).execute()
+    else:
+        drive.files().create(body=file_metadata, media_body=media).execute()
+    print(f"📤 Uploaded {filename} to Drive.")
 
 
 def get_recent_gamepks(team_id=137):
@@ -92,6 +133,9 @@ def send_telegram_message(title, url):
 
 def main():
     print("🎬 Condensed Game Bot (GitHub Actions version)")
+    drive = get_drive_service()
+    download_posted_file(drive, POSTED_GAMES_FILE)
+
     gamepks = get_recent_gamepks()
     print(f"🧾 Found {len(gamepks)} recent Giants games")
 
@@ -106,6 +150,7 @@ def main():
             success = send_telegram_message(title, url)
             if success:
                 mark_as_posted(gamepk)
+                upload_posted_file(drive, POSTED_GAMES_FILE)
                 print("✅ Posted to Telegram")
             else:
                 print("❌ Failed to post to Telegram")
