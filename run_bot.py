@@ -136,37 +136,40 @@ def send_email(title, url):
         return False
     try:
         recipients = [addr.strip() for addr in EMAIL_RECIPIENT.split(",") if addr.strip()]
+        success = True
 
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = title
-        msg["From"] = EMAIL_ADDRESS
-        msg["To"] = EMAIL_ADDRESS  # visible sender
-        msg["Bcc"] = ", ".join(recipients)  # hidden recipients
+        for recipient in recipients:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = title
+            msg["From"] = EMAIL_ADDRESS
+            msg["To"] = recipient
 
-        text = f"{title}\n\nWatch here: {url}"
-        html = f"""\
-        <html>
-            <body>
-                <h3>{title}</h3>
-                <p><a href="{url}">▶ Watch Condensed Game</a></p>
-                <p><i>{random.choice(COPY_LINES)}</i></p>
-            </body>
-        </html>
-        """
+            text = f"{title}\n\nWatch here: {url}"
+            html = f"""\
+            <html>
+                <body>
+                    <h3>{title}</h3>
+                    <p><a href="{url}">▶ Watch Condensed Game</a></p>
+                    <p><i>{random.choice(COPY_LINES)}</i></p>
+                </body>
+            </html>
+            """
 
-        msg.attach(MIMEText(text, "plain"))
-        msg.attach(MIMEText(html, "html"))
+            msg.attach(MIMEText(text, "plain"))
+            msg.attach(MIMEText(html, "html"))
 
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_ADDRESS, recipients, msg.as_string())
+            with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                server.starttls()
+                server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+                server.sendmail(EMAIL_ADDRESS, recipient, msg.as_string())
 
-        print("✅ Email sent.")
-        return True
+            print(f"✅ Email sent to {recipient}")
+
+        return success
     except Exception as e:
         print(f"❌ Email failed: {e}")
         return False
+
 
 def main():
     print("🎬 Condensed Game Bot (GitHub Actions version)")
