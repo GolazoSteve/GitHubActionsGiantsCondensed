@@ -3,8 +3,6 @@ import re
 import os
 import json
 import random
-import smtplib
-from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
@@ -13,25 +11,27 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 import io
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from dateutil.parser import parse
 
 load_dotenv()
 
-# Env vars
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 POSTED_GAMES_FILE = "posted_games.txt"
-DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-EMAIL_SENDER = os.getenv("EMAIL_SENDER")
-EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
-EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
 COPY_LINES = json.load(open("copy_bank.json"))['lines']
+DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
+EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
+EMAIL_TO = os.getenv("EMAIL_RECIPIENT")
 
 def get_drive_service():
     creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
     creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/drive"])
     return build("drive", "v3", credentials=creds)
-
 
 def download_posted_file(drive, filename):
     query = f"'{DRIVE_FOLDER_ID}' in parents and name='{filename}'"
@@ -49,7 +49,6 @@ def download_posted_file(drive, filename):
             _, done = downloader.next_chunk()
     print(f"📥 Downloaded {filename} from Drive.")
 
-
 def upload_posted_file(drive, filename):
     query = f"'{DRIVE_FOLDER_ID}' in parents and name='{filename}'"
     results = drive.files().list(q=query, fields="files(id)").execute()
@@ -61,7 +60,6 @@ def upload_posted_file(drive, filename):
     else:
         drive.files().create(body=file_metadata, media_body=media).execute()
     print(f"📤 Uploaded {filename} to Drive.")
-
 
 def get_recent_gamepks(team_id=137):
     now_uk = datetime.now(ZoneInfo("Europe/London"))
@@ -75,9 +73,10 @@ def get_recent_gamepks(team_id=137):
         for game in date["games"]:
             if game["status"]["detailedState"] == "Final":
                 game_pk = game["gamePk"]
-                games.append(game_pk)
-    return sorted(games, reverse=True)
-
+                game_date = game["gameDate"]
+                games.append((parse(game_date), game_pk))
+    games.sort(reverse=True)
+    return [pk for date, pk in games]
 
 def already_posted(gamepk):
     if not os.path.exists(POSTED_GAMES_FILE):
@@ -85,11 +84,9 @@ def already_posted(gamepk):
     with open(POSTED_GAMES_FILE, "r") as f:
         return str(gamepk) in f.read()
 
-
 def mark_as_posted(gamepk):
     with open(POSTED_GAMES_FILE, "a") as f:
         f.write(f"{gamepk}\n")
-
 
 def find_condensed_game(gamepk):
     url = f"https://statsapi.mlb.com/api/v1/game/{gamepk}/content"
@@ -99,6 +96,7 @@ def find_condensed_game(gamepk):
         if res.status_code != 200:
             print(f"⚠️ HTTP {res.status_code} for {url}")
             return None, None
+
         data = res.json()
         items = data.get("highlights", {}).get("highlights", {}).get("items", [])
         for item in items:
@@ -112,7 +110,6 @@ def find_condensed_game(gamepk):
     except Exception as e:
         print(f"❌ Exception while calling content API: {e}")
         return None, None
-
 
 def send_telegram_message(title, url):
     game_info = title.replace("Condensed Game: ", "").strip()
@@ -133,21 +130,39 @@ def send_telegram_message(title, url):
     )
     return res.ok
 
-
-def send_email_notification(subject, body):
-    msg = MIMEText(body, "plain")
-    msg["Subject"] = subject
-    msg["From"] = EMAIL_SENDER
-    msg["To"] = EMAIL_RECEIVER
-
+def send_email(title, url):
+    if not (EMAIL_ADDRESS and EMAIL_PASSWORD and EMAIL_TO):
+        print("✉️ Email config not set. Skipping.")
+        return False
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(EMAIL_SENDER, EMAIL_APP_PASSWORD)
-            server.send_message(msg)
-        print("📧 Email sent!")
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = title
+        msg["From"] = EMAIL_ADDRESS
+        msg["To"] = EMAIL_TO
+
+        text = f"{title}\n\nWatch here: {url}"
+        html = f"""\
+        <html>
+            <body>
+                <h3>{title}</h3>
+                <p><a href="{url}">▶ Watch Condensed Game</a></p>
+                <p><i>{random.choice(COPY_LINES)}</i></p>
+            </body>
+        </html>
+        """
+
+        msg.attach(MIMEText(text, "plain"))
+        msg.attach(MIMEText(html, "html"))
+
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_ADDRESS, EMAIL_TO, msg.as_string())
+        print("✅ Email sent.")
+        return True
     except Exception as e:
         print(f"❌ Email failed: {e}")
-
+        return False
 
 def main():
     print("🎬 Condensed Game Bot (GitHub Actions version)")
@@ -165,20 +180,17 @@ def main():
 
         title, url = find_condensed_game(gamepk)
         if url:
-            if send_telegram_message(title, url):
+            telegram_success = send_telegram_message(title, url)
+            email_success = send_email(title, url)
+            if telegram_success or email_success:
                 mark_as_posted(gamepk)
                 upload_posted_file(drive, POSTED_GAMES_FILE)
-                send_email_notification(
-                    subject="🎥 New Giants Condensed Game",
-                    body=f"{title}\n{url}"
-                )
-                print("✅ Posted to Telegram and emailed")
+                print("✅ Posted to Telegram and/or emailed")
             else:
-                print("❌ Failed to post to Telegram")
+                print("⚠️ Message failed to send anywhere")
             break
         else:
             print(f"❌ No condensed game found for {gamepk}")
-
 
 if __name__ == "__main__":
     main()
