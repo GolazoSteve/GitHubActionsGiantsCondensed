@@ -3,6 +3,8 @@ import re
 import os
 import json
 import random
+import smtplib
+from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
@@ -14,11 +16,15 @@ import io
 
 load_dotenv()
 
+# Env vars
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 POSTED_GAMES_FILE = "posted_games.txt"
-COPY_LINES = json.load(open("copy_bank.json"))['lines']
 DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+EMAIL_SENDER = os.getenv("EMAIL_SENDER")
+EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
+EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
+COPY_LINES = json.load(open("copy_bank.json"))['lines']
 
 
 def get_drive_service():
@@ -69,10 +75,8 @@ def get_recent_gamepks(team_id=137):
         for game in date["games"]:
             if game["status"]["detailedState"] == "Final":
                 game_pk = game["gamePk"]
-                game_date = game["gameDate"]
-                games.append((game_date, game_pk))
-    games.sort(reverse=True)  # Most recent first
-    return [pk for date, pk in games]
+                games.append(game_pk)
+    return sorted(games, reverse=True)
 
 
 def already_posted(gamepk):
@@ -95,7 +99,6 @@ def find_condensed_game(gamepk):
         if res.status_code != 200:
             print(f"⚠️ HTTP {res.status_code} for {url}")
             return None, None
-
         data = res.json()
         items = data.get("highlights", {}).get("highlights", {}).get("items", [])
         for item in items:
@@ -131,6 +134,21 @@ def send_telegram_message(title, url):
     return res.ok
 
 
+def send_email_notification(subject, body):
+    msg = MIMEText(body, "plain")
+    msg["Subject"] = subject
+    msg["From"] = EMAIL_SENDER
+    msg["To"] = EMAIL_RECEIVER
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(EMAIL_SENDER, EMAIL_APP_PASSWORD)
+            server.send_message(msg)
+        print("📧 Email sent!")
+    except Exception as e:
+        print(f"❌ Email failed: {e}")
+
+
 def main():
     print("🎬 Condensed Game Bot (GitHub Actions version)")
     drive = get_drive_service()
@@ -147,14 +165,17 @@ def main():
 
         title, url = find_condensed_game(gamepk)
         if url:
-            success = send_telegram_message(title, url)
-            if success:
+            if send_telegram_message(title, url):
                 mark_as_posted(gamepk)
                 upload_posted_file(drive, POSTED_GAMES_FILE)
-                print("✅ Posted to Telegram")
+                send_email_notification(
+                    subject="🎥 New Giants Condensed Game",
+                    body=f"{title}\n{url}"
+                )
+                print("✅ Posted to Telegram and emailed")
             else:
                 print("❌ Failed to post to Telegram")
-            break  # Only post the most recent game
+            break
         else:
             print(f"❌ No condensed game found for {gamepk}")
 
